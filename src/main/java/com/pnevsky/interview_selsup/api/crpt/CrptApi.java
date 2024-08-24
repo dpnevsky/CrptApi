@@ -10,7 +10,6 @@ import org.slf4j.LoggerFactory;
 import javax.net.ssl.HttpsURLConnection;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
@@ -22,6 +21,7 @@ public class CrptApi{
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Logger logger = LoggerFactory.getLogger(CrptApi.class);
     private final Semaphore semaphore;
+    private final ScheduledExecutorService scheduledExecutor;
 
     CrptApi(TimeUnit timeUnit, int requestLimit) throws IllegalArgumentException{
         if (requestLimit <= 0) {
@@ -29,13 +29,13 @@ public class CrptApi{
             throw new IllegalArgumentException();
         }
         semaphore = new Semaphore(requestLimit);
-        ScheduledExecutorService scheduledExecutor = Executors.newSingleThreadScheduledExecutor();
+        this.scheduledExecutor = Executors.newScheduledThreadPool(1);
         scheduledExecutor.scheduleAtFixedRate(()-> semaphore.release(requestLimit),
-                0, 1, timeUnit);
+                1, 1, timeUnit);
     }
 
-    public void createDocument(Document document, String signature) throws IOException, InterruptedException {
-        logger.info("Attempting to create document: {}", document);
+    public void createDocument(Document document, String signature) {
+        logger.info("Attempting to create document: {}", "doc_id: " + document.getDoc_id());
         try {
             semaphore.acquire();
             String documentJSON = objectMapper.writeValueAsString(document);
@@ -51,18 +51,22 @@ public class CrptApi{
             outputStream.write(input, 0, input.length);
 
             logger.debug("Sent request to API: {}", documentJSON);
-
             int responseCode = connection.getResponseCode();
-            if (responseCode != HttpURLConnection.HTTP_OK) {
-                logger.error("Failed to create document: {}", responseCode);
+            if (responseCode != HttpsURLConnection.HTTP_OK) {
+                logger.error("Failed to create document: {}", "doc_id: " + document.getDoc_id() +
+                        " code: " + responseCode);
             }
             else {
-                logger.info("Document created successfully: {}", responseCode);
+                logger.info("Document created successfully: {}", "doc_id: " + document.getDoc_id() +
+                        " code: " + responseCode );
             }
-        } catch (InterruptedException | IOException ex){
-            logger.error(ex.getMessage());
-            semaphore.release();
+        } catch (IOException  | InterruptedException ex) {
+            logger.error("doc_id: {} {}", document.getDoc_id(), ex.getMessage());
         }
+    }
+
+    public void shutdown() {
+        scheduledExecutor.shutdown();
     }
 }
 
@@ -112,4 +116,18 @@ class Document {
 @Getter
 enum DocType{
     LP_INTRODUCE_GOODS
+}
+
+class MainTest{
+    public static void main(String[] args) {
+        Document document = new Document();
+        document.setDescription(new Document.Description());
+        document.getProducts().add(new Document.Product());
+        String signature = "Signature";
+        CrptApi crptApi = new CrptApi(TimeUnit.SECONDS, 10);
+        for (int i = 0; i < 100; i++) {
+            crptApi.createDocument(document, signature);
+        }
+        crptApi.shutdown();
+    }
 }
